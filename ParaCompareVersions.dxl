@@ -1,0 +1,1300 @@
+/*****************************************************************************
+Copyright © 2010-2018 Reinhold Lauer
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this 
+software and associated documentation files (the "Software"), to deal in the Software 
+without restriction, including without limitation the rights to use, copy, modify, merge, 
+publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons 
+to whom the Software is furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all copies or 
+substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, 
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR 
+PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE 
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR 
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+DEALINGS IN THE SOFTWARE.
+*****************************************************************************/
+
+/* 
+- Comparing of two versions in the same module or in different modules.
+- Comparing of all attributes or only selected ones.
+- Browsing of the objects in the order they are contained in the modules.
+- Inserting of deleted objects behind the previous predecessor.
+- Showing information about the versions and attributes in the modules.
+- Showing changes as untangled markup including unchanged attributes.
+- Exporting of a version of a module as a rich text file.
+*/
+
+//**********************************  History  ******************************
+// J�rgen Albrecht  2008-01-15  Base version
+// Reinhold Lauer   2010-10-19  Included added/deleted attributes
+// Reinhold Lauer   2010-10-29  Added entire main column option
+//                              Added unchanged attributes option
+// Reinhold Lauer   2010-11-19  Added registry support
+//                              Reduced export file size
+//                              Improved comparision readability
+// Reinhold Lauer   2011-01-11  Merged deleted objects
+// Reinhold Lauer   2011-01-17  Update after replies on Doors forum
+// Reinhold Lauer   2013-06-20  Added Out Links comparison, changed Enum comparison
+//                              Fixed bugs found by Tobias Kroner.
+// Reinhold Lauer   2013-10-11  Added Object Hierarchy comparison. 
+// Tobias Kroner    2013-10-11  Extended Statistics as suggestion. Used static limit to 400 attributes.
+// Reinhold Lauer   2013-10-17  Added Out Links and Object hierarchy to Compared Attributes.
+//                              Put changed attributes statistics into table.
+// Reinhold Lauer   2013-10-18  Remade statistics.
+
+pragma runLim, 0
+
+/////////////////////////////////////////////////////////////////////
+const string sColorTable = "{\\colortbl ;\\red255\\green0\\blue0;\\red0\\green125\\blue0;\\red0\\green0\\blue128;\\red125\\green125\\blue125;\\red0\\green205\\blue205;}"
+const string sBlack = "\\cf0 "
+const string sRed = "\\cf1 "
+const string sGreen = "\\cf2 "
+const string sBlue = "\\cf3 "
+const string sGray = "\\cf4 "
+const string sCyan = "\\cf5 "
+const string saColors[] = {"Black", "Gray", "Red", "Blue", "Cyan"}
+const string saColorFonts[] = {sBlack, sGray, sRed, sBlue, sCyan}
+const string sWhiteBack = "\\chcbpat0 "
+const string sRedBack = "\\chcbpat1 "
+const string sGreenBack = "\\chcbpat2 "
+const string sBlueBack = "\\chcbpat3 "
+const string sGrayBack = "\\chcbpat4 "
+const string sCyanBack = "\\chcbpat5 "
+const string saColorBacks[] = {sWhiteBack, sGrayBack, sRedBack, sBlueBack, sCyanBack}
+string sRemovedStyle = "\\cf1\\strike "
+string sRemovedBack = sRedBack
+string sAddedStyle = sBlue
+string sAddedBack = sBlueBack
+
+const string sTopBorder = "\\clbrdrt\\brdrs\\brdrw15 "
+const string sLeftBorder = "\\clbrdrl\\brdrs\\brdrw15 "
+const string sRightBorder = "\\clbrdrr\\brdrs\\brdrw15 "
+const string sBottomBorder = "\\clbrdrb\\brdrs\\brdrw15 "
+string sIdentifierBorder = ""
+string sOldIdentifierBorder = ""
+string sTextBorder = sTopBorder sRightBorder
+string sAllBorders = sTopBorder sLeftBorder sRightBorder sBottomBorder
+
+string sRegistryPath = "HKEY_CURRENT_USER\\SOFTWARE\\Para\\Compare Versions\\"
+const int iBloodyBig = 5000
+
+Module mNewerModule = null
+Module mOlderModule = null
+Module mNewerVersion = null
+Module mOlderVersion = null
+string sNewerModuleName = ""
+string sOlderModuleName = ""
+Stream strmOutput
+bool bShowUnchangedAttributes = true
+bool bShowAllMainAttributes = true
+bool bJustExport = false
+string sPreviousObjectId = ""
+
+Regexp findColorTable = regexp "colortbl[^}]*}"
+Regexp hasWhiteSpace = regexp " |[\n]"
+
+DB dbCompareVersions = null
+DBE lstNewer = null
+DBE fldNewerVersion = null
+DBE lstOlder = null
+DBE fldOlderVersion = null
+DBE mlstAttrNames = null
+DBE btnLoadVersions = null
+DBE btnCompare = null
+DBE btnBrowseOlder = null
+DBE cbShowUnchangedAttributes = null
+DBE cbShowAllMainAttributes = null
+DBE chcNewerColor = null
+DBE cbUnderlined = null
+DBE chcOlderColor = null
+DBE cbStrikeThrough = null
+
+DBE btnSelectAllAttr = null
+DBE btnDeselectAllAttr = null
+DBE btnSelectAsView = null
+DBE fldSelectedAttrCount = null
+DBE btnSelectMatchingAttr1 = null
+DBE btnSetMatchingAttr1 = null
+DBE fldRegexPatternAttr1 = null
+DBE btnSelectMatchingAttr2 = null
+DBE btnSetMatchingAttr2 = null
+DBE fldRegexPatternAttr2 = null
+DBE btnSelectMatchingAttr3 = null
+DBE btnSetMatchingAttr3 = null
+DBE fldRegexPatternAttr3 = null
+
+DBE fnOutputFileBrowse = null
+
+
+// *************************************************************************************************************************
+// Help
+
+// Show the help dialog box. 
+void applyShowHelp(DB db)
+{
+	string sHeading = "\\b\\ul\\li0 "
+	string sNormal = "\\b0\\ul0\\li180 "
+	string sIndent = "\\b0\\ul0\\li360 "
+	string sHelpText = 
+	sHeading "General\n\n"//-
+	sNormal "Objects are compared in the order as they are contained in the newer version. "//-
+			"Deleted older objects follow the previous older object, which has not been deleted. "//-
+			"Para Compare Versions finds fewer differences, because it does not consider it to be a difference when "//-
+			"a completely empty object is deleted. For example when empty table rows are deleted.\n\n"//-
+			"All selected attributes are compared. If the newer and older attribute are empty, nothing is shown. "//-
+	        "If the same version of the same module is selected all attributes are exported. "//-
+			"Only the attribute text is compared, but not the rich text format and OLE objects.\n\n"//-
+	sNormal "Some of the settings which influence the Para Version Compare output are stored in the registry.\n\n"//-
+	sHeading "Basic Steps to Perform a Comparison\n\n"//-
+	sIndent "Select a different older module by clicking on \\b Browse Older\\b0. (Optional)\n"//-
+			"Select the versions to compare in \\b Newer Version\\b0  and \\b Older Version\\b0.\n"//-
+	        "Load the versions to get all attributes by clicking on \\b Load Versions\\b0. (Optional)\n"//-
+	        "Select the attributes to compare. (Optional)\n"//-
+	        "Select the output file by clicking on \\b Browse...\\b0. (Optional)\n"//-
+	        "Click \\b Compare\\b0 .\n\n "//-
+	sHeading "Attributes to Compare\n\n"//-
+	sNormal "When Para Compare Versions is launched, the attributes of the current version are shown. "//-
+	        "To get additional attributes from the compared versions, the compared versions have to be loaded. "//-
+	        "Additional attributes are selected when they are added to the list.\n\n"//-
+	        "All attributes can be selected by clicking on \\b Select All\\b0  or deselected by clicking on \\b Deselect All\\b0. "//-
+	        "Individual attributes can be selected or deselected by clicking on them. "//-
+	        "The attributes in the current view in the newer module can be selected by clicking on \\b As View\\b0 .\n\n"//-
+	        "Attribute sets can be selected according to regular expressions by clicking on \\b Select\\b0 . "//-
+	        "The regular expressions can be set according to the selected attributes in the \\b Attributes to Compare\\b0  list by clicking on \\b Set\\b0 ."
+	
+	DB  dbHelp = create ("Para Compare Versions Help", styleCentered)
+	DBE rtbHelp = richText(dbHelp, "", sHelpText, 700, 500, true)
+	show dbHelp
+}
+
+// *************************************************************************************************************************
+// Attribute handling
+
+// Update the selected field and buttons
+void doUpdateSelectedCount (DBE dbe)
+{
+    int iTotalAttr = noElems (mlstAttrNames)
+    int iSelectedAttr = 0
+    string sAttrName = ""
+    for sAttrName in mlstAttrNames do iSelectedAttr++
+    
+    if (iSelectedAttr == 0 ) 
+    {
+    	inactive btnDeselectAllAttr
+    	inactive btnCompare
+    }
+    else {
+    	active btnDeselectAllAttr
+    	active btnCompare
+    }
+    
+    if (iSelectedAttr == iTotalAttr) inactive btnSelectAllAttr
+    else active btnSelectAllAttr
+    
+    set (fldSelectedAttrCount, iSelectedAttr "/" iTotalAttr "")
+}
+
+// Select all attributes of the list
+void doSelectAllAttr (DBE dbe)
+{ 
+    int iAttrIndex = 0
+    for iAttrIndex in 0 : (noElems mlstAttrNames)-1 do set (mlstAttrNames, iAttrIndex, true)
+    doUpdateSelectedCount mlstAttrNames
+}
+
+// Deselect all attributes of the list
+void doDeselectAllAttr (DBE dbe)
+{ 
+    int iAttrIndex
+    for iAttrIndex in 0 : (noElems mlstAttrNames)-1 do set(mlstAttrNames, iAttrIndex, false)
+    doUpdateSelectedCount mlstAttrNames
+}
+
+// Deselect all attributes of the list
+void doSelectAsView (DBE dbe)
+{ 
+	Skip skAttrInView = create
+	Column cColumn = null
+	int iAttrInView = 0
+	
+	doDeselectAllAttr (DBE dbe)
+	for cColumn in mNewerModule do 
+	{
+		if (main cColumn) 
+		{
+			put (skAttrInView, iAttrInView++, "Object Heading")
+			put (skAttrInView, iAttrInView++, "Object Text")
+		}	
+		if (!null attrName cColumn) put (skAttrInView, iAttrInView++, attrName cColumn)
+	}
+    int iAttrIndex = 0
+    for iAttrIndex in 0 : (noElems mlstAttrNames)-1 do 
+    {
+    	string sAttrName = get (mlstAttrNames, iAttrIndex)
+    	string sAttrInView = ""
+    	for sAttrInView in skAttrInView do 
+    	{
+    		if (sAttrInView ==  sAttrName) set (mlstAttrNames, iAttrIndex, true)
+    	}
+    }
+    delete skAttrInView
+    doUpdateSelectedCount mlstAttrNames
+}
+
+// Convert string into a regular expression, and catch any errors.
+Regexp regexpOf (string sRegexPattern)
+{ 
+    noError
+    Regexp isPatt = regexp sRegexPattern
+    string errmsg = lastError
+    if (errmsg != "") 
+    {
+        if (matches("<[^>]*> *", errmsg)) errmsg = errmsg[end(0)+1:]
+        ack errmsg
+        return null
+    }
+    return isPatt
+}
+
+// Select the attributes, which match the regular expression.
+void doSelectMatchingAttr (DBE dbeCalling)
+{
+    string sRegexPattern = ""   
+    if(dbeCalling == btnSelectMatchingAttr1) 
+    {
+    	sRegexPattern = get (fldRegexPatternAttr1)
+		setRegistry (sRegistryPath, "Regex Pattern 1", sRegexPattern)
+    }
+    if(dbeCalling == btnSelectMatchingAttr2) 
+    {
+    	sRegexPattern = get (fldRegexPatternAttr2)
+		setRegistry (sRegistryPath, "Regex Pattern 2", sRegexPattern)
+    }
+    if(dbeCalling == btnSelectMatchingAttr3) 
+    {
+    	sRegexPattern = get (fldRegexPatternAttr3)
+		setRegistry (sRegistryPath, "Regex Pattern 3", sRegexPattern)
+    }
+    Regexp isPatt = regexpOf sRegexPattern
+    if (null isPatt) return
+    
+    int iAttrIndex = 0
+    for iAttrIndex in 0 : (noElems mlstAttrNames)-1 do
+    {
+        string sAttrName = get (mlstAttrNames, iAttrIndex)
+        set (mlstAttrNames, iAttrIndex, isPatt sAttrName)
+    }
+    doUpdateSelectedCount mlstAttrNames
+}
+
+// Select the attributes according to the regex. 
+void doSetMatchingAttr (DBE dbeCalling)
+{
+	string sRegexPattern = ""
+	string sAttrName = ""
+	for sAttrName in mlstAttrNames do
+	{
+		if (sRegexPattern != "") sRegexPattern = sRegexPattern "|"
+		sRegexPattern = sRegexPattern "(^" sAttrName "$)"
+	}
+    if(dbeCalling == btnSetMatchingAttr1) 
+    {
+    	set (fldRegexPatternAttr1, sRegexPattern)
+		setRegistry (sRegistryPath, "Regex Pattern 1", sRegexPattern)
+    }
+    if(dbeCalling == btnSetMatchingAttr2)
+    {
+    	set (fldRegexPatternAttr2, sRegexPattern)
+    	setRegistry (sRegistryPath, "Regex Pattern 2", sRegexPattern)
+    }
+    if(dbeCalling == btnSetMatchingAttr3)
+    {
+    	set (fldRegexPatternAttr3, sRegexPattern)
+    	setRegistry (sRegistryPath, "Regex Pattern 3", sRegexPattern)
+    }
+}
+
+// Add elements to a sorted list if the element is not listed.
+void addAttrToList (DBE dbeAttrList, string sNewAttrName)
+{
+	int iAttrPosition	// 5 to skip Object Heading, Object Short Text, Object Text, Out Links, Object Hierarchy
+	for (iAttrPosition = 5; iAttrPosition < noElems dbeAttrList; iAttrPosition++)
+	{
+		string sAttrName = get (dbeAttrList, iAttrPosition)
+		if (sAttrName == sNewAttrName) return // exists already
+		if (sAttrName > sNewAttrName) break	// insert here
+	}
+	insert (dbeAttrList, iAttrPosition, sNewAttrName)
+	set (dbeAttrList, iAttrPosition, true)
+}
+
+// Fill the attributes list with module attributes.
+void addVersionAttibutesToList (Module mModule)
+{
+	AttrDef adAttrDefinition = null
+	for adAttrDefinition in mModule do
+	{
+		if (adAttrDefinition.module || adAttrDefinition.system) continue
+		addAttrToList (mlstAttrNames, adAttrDefinition.name "")
+	}
+}
+
+// *************************************************************************************************************************
+// Module version handling
+
+// Make sure that the newer version is really newer
+void checkVersionSelection (DBE dbeKlick)
+{
+	if(mOlderModule == mNewerModule)
+	{
+		int iNewerIndex = get lstNewer            // position in list
+		int iOlderIndex = get lstOlder
+		
+		if (dbeKlick == lstOlder && iNewerIndex > iOlderIndex)  set (lstNewer, iOlderIndex)
+		if (dbeKlick == lstNewer && iNewerIndex > iOlderIndex)  set (lstOlder, iNewerIndex)
+	}
+}
+
+// fill a version list
+void fillVersionList (DBE lstVersion, Module mVersion)
+{
+	Baseline bBaseline = null
+	empty lstVersion
+	for bBaseline in mVersion do
+	{
+		string sBaseline = major bBaseline "." minor bBaseline "  " suffix bBaseline
+		insert (lstVersion, 0, sBaseline)
+	}
+	Date dNow = dateOf intOf today 
+	string sNow = dNow ""
+	insert (lstVersion, 0, "Current " today sNow[8:])	// add the current version
+	set (lstVersion, 0)
+}
+
+// Show information about the selected baselines.
+void showVersionInformation (Module mModule, string sNewerBaselineName, string sOlderBaselineName)
+{
+	string sMarkup = ""
+															// show baseline information
+	strmOutput << sBlack "\\pard \\fs24\\ul Versions in " fullName mModule "\\ul0 \\par\\par\n"
+	if (bJustExport) strmOutput << "\\fs16 The exported version is shown black.\\par\n"
+	else strmOutput << "\\fs16 Compared versions are shown black.\\par\n"
+	strmOutput << "\\fs16 Other versions are shown " sGray "gray" sBlack ".\\par\\par\n"
+	strmOutput << "\\trowd \\trgaph108\\trleft-108\\trhdr"
+	strmOutput << sAllBorders "\\cellx2500 " sAllBorders "\\cellx4000 " sAllBorders "\\cellx5700 " sAllBorders "\\cellx10000 \n"
+	strmOutput << "\\intbl \\fs16\\b Version \\cell Created by \\cell Date \\cell Annotation \\cell\\b0\\row\n"
+	Baseline bBaseline = null
+	for bBaseline in mModule do
+	{
+		string sBaseline = major bBaseline "." minor bBaseline "  " suffix bBaseline
+		if (sNewerBaselineName == sBaseline || sOlderBaselineName == sBaseline) sMarkup = sBlack
+		else sMarkup = sGray
+		strmOutput << "\\intbl " sMarkup sBaseline "\\cell " user bBaseline "\\cell " dateOf bBaseline "\\cell " annotation bBaseline "\\cell\\row\n"
+	}
+	string sCurrentVersion = ""
+	sMarkup = sGray
+	if (fullName mModule == sNewerModuleName)
+	{
+		if (get lstNewer == 0) sMarkup = sBlack
+		sCurrentVersion = get (lstNewer, 0)
+	}
+	if (fullName mModule == sOlderModuleName)
+	{
+		if (get lstOlder == 0) sMarkup = sBlack
+		sCurrentVersion = get (lstOlder, 0)
+	}
+	strmOutput << "\\intbl " sMarkup sCurrentVersion "\\cell "  "\\cell "  "\\cell "  "\\cell\\row\n"
+}
+
+// Show information about the modules and selected attributes.
+void showModuleInformation (Module mNewerVersion, Module mOlderVersion)
+{
+	string sNewerVersionName = get lstNewer            // version name
+	string sOlderVersionName = get lstOlder
+	string sMarkup = ""
+	
+	if (fullName mNewerVersion == fullName mOlderVersion) 
+	{
+		showVersionInformation (mNewerVersion, sNewerVersionName, sOlderVersionName)
+	}
+	else
+	{
+		showVersionInformation (mNewerVersion, sNewerVersionName, sNewerVersionName)
+		strmOutput << sBlack "\\pard\\par\\par\n"
+		showVersionInformation (mOlderVersion, sOlderVersionName, sOlderVersionName)
+	}
+
+	// show compared attributes
+	if (bJustExport)
+	{
+		strmOutput << sBlack "\\pard\\par \\fs24 \\ul Exported Attributes\\ul0 \\par \\par\n"
+		strmOutput << "\\fs16 Exported attributes are shown black.\\par \n"
+	}
+	else
+	{
+		strmOutput << sBlack "\\pard\\par \\fs24 \\ul Compared Attributes\\ul0 \\par \\par\n"
+		strmOutput << "\\fs16 Compared attributes are shown black.\\par \n"
+	}
+	strmOutput << "\\fs16 Other existing attributes are shown " sGray "gray" sBlack ".\\par\\par\n"
+	strmOutput << "\\trowd \\trgaph108\\trleft-108\\trhdr"
+	strmOutput << sAllBorders "\\cellx5000 " sAllBorders "\\cellx10000\n"
+	strmOutput << "\\intbl \\fs16\\b " sOlderModuleName "\\par " sOlderVersionName "\\cell " sNewerModuleName "\\par " sNewerVersionName "\\b0\\cell\\row\n"
+	string sAttrName = ""
+	string sNewerAttr = ""
+	string sOlderAttr = ""
+	int iAttributesCount
+	for (iAttributesCount = 0; iAttributesCount < noElems mlstAttrNames; iAttributesCount++)
+	{
+		sAttrName = get (mlstAttrNames, iAttributesCount)
+		
+		sNewerAttr = sAttrName
+		sOlderAttr = sAttrName
+		if (sAttrName == "Out Links" || sAttrName == "Object Hierarchy") ; // show artificial attributes
+		else {	// if attribute does not exist in version remove it
+			current = mNewerVersion
+			if (!exists attribute sAttrName) sNewerAttr = ""
+			current = mOlderVersion
+			if (!exists attribute sAttrName) sOlderAttr = ""
+		}
+		
+		if (sOlderAttr != "" || sNewerAttr != "")
+		{
+			sMarkup = sGray
+			if (selected (mlstAttrNames, iAttributesCount)) sMarkup = sBlack 
+			strmOutput << "\\intbl " sMarkup sOlderAttr "\\cell " sNewerAttr "\\cell\\row\n"
+		}
+	}
+}
+
+// Load the versions and update the attributes to compare
+Module loadVersion (DBE lstVersion, Module mModule)
+{
+	Module mVersion = null
+	Baseline bBaseline = null
+	string sVersionName = get lstVersion            // version name
+	string sModuleName = fullName mModule
+	
+	progressStart (dbCompareVersions, " Para Compare Versions", "", 1)
+	progressMessage "Loading " sModuleName " " sVersionName "..."
+
+	if (get lstVersion == 0) mVersion = read (sModuleName, false)	// current version    
+	else	// look for the baseline and load it
+	{
+		for bBaseline in mModule do
+		{
+			string sBaselineName = major bBaseline "." minor bBaseline "  " suffix bBaseline
+			if (sVersionName == sBaselineName) mVersion = load (mModule, bBaseline, false)
+		}
+	}
+	progressStop
+	return mVersion
+}
+
+// Load the versions and update the attributes to compare
+void doLoadVersions (DBE btnLoadVersions)
+{
+	mNewerVersion = loadVersion (lstNewer, mNewerModule)
+	current = mNewerVersion
+	filtering off
+	sorting off
+	addVersionAttibutesToList mNewerVersion
+
+	mOlderVersion = loadVersion (lstOlder, mOlderModule)
+	current = mOlderVersion
+	filtering off
+	sorting off
+	addVersionAttibutesToList mOlderVersion
+
+    doUpdateSelectedCount mlstAttrNames
+}
+
+// Browse the selected project
+void doBrowseOlder (DBE x){
+    Item thisItem = item sOlderModuleName
+	Folder fParentFolder = getParentFolder mOlderModule
+    string sSelectedOlderModule = fnMiniExplorer (dbCompareVersions, fParentFolder, MINI_EXP_FORMAL_MODS, "Para Compare Versions Browse Older Module", "Select an older module...")
+
+    thisItem = item sSelectedOlderModule
+    if (!null thisItem) 
+    {
+        if (type thisItem == "Formal") 
+        {
+            sOlderModuleName = fullName thisItem
+			mOlderModule = read (sOlderModuleName, false)    
+			fillVersionList (lstOlder, mOlderModule)
+			set (fldOlderVersion, sOlderModuleName)
+        } 
+    }
+}
+
+// *************************************************************************************************************************
+// Comparison Engine
+
+// Cleanup and untagle the RTF string returned by diff
+string fixRTFragment (string sMess)
+{
+	int i = 0					 
+	int iLenght = length sMess
+
+	// remove the additional line break 
+	string sClosingBraket = ""
+	if(iLenght > 6 && sMess[iLenght-6:iLenght-1] == "\\par }")  
+	{
+		iLenght = iLenght - 6	// remove the additional line break
+		sClosingBraket = "}"	// remeber that the closing braket has been removed and add it later
+	}
+
+	// clean up the RTF string by combining words of the same RTF format
+	string sClean = ""				
+	bool bInFormat = false
+	string sFormat = ""
+	string sLastFormat = ""
+	for (i=0; i < iLenght; i++)
+	{
+		if (sMess[i] == '{') bInFormat = true	// format start
+		if (bInFormat) sFormat = sFormat sMess[i] ""  // get the formatting
+		if(sMess[i] == ' ' && bInFormat) // format finished 
+		{
+			if(sFormat != sLastFormat) // new format
+			{
+				if(sLastFormat != "") sClean = sClean "}"  // close old format
+				sClean = sClean sFormat	// add the new format
+			}
+			sLastFormat = sFormat
+			sFormat = ""
+			bInFormat = false
+		}
+		else if(!bInFormat)
+		{
+			if (sMess[i] != '}') sClean = sClean sMess[i] ""	// only if not from the same format
+			else if (sMess[i+1] != '{') 	// end of format and black text is following
+			{
+				sClean = sClean sMess[i] ""
+				sLastFormat = ""
+			}
+		}
+	}
+	sClean = sClean sClosingBraket
+
+	// untangle the mixed removed / added words
+	string sUntangled = ""
+	bool bInRemoved = false
+	bool bInAdded = false
+	bool bInUnchanged = true
+	int iRemoved = 0
+	int iAdded = 0
+	string sRemovedText = ""
+	string sAddedText = ""
+	string sUnchangedText = ""
+	string sSpacer = ""
+	string sRemovedFragment = ""
+
+	for (i=0; i < length sClean; i++)
+	{
+		if (sClean[i] == '{') bInRemoved = bInAdded = bInUnchanged = false   // start of another format
+		if (bInRemoved)
+		{
+			if (sClean[i] != '}') sRemovedFragment = sRemovedFragment sClean[i] ""  // collect removed characters
+			else  
+			{	// check if there is a space missing
+				if (sRemovedText != "" && sRemovedFragment[0] != ' ') sRemovedText = sRemovedText " "
+				sRemovedText = sRemovedText sRemovedFragment
+				sRemovedFragment = ""
+			}
+		}
+
+		if (sClean[i] == sRemovedStyle[iRemoved]) iRemoved++   // find the start of removed text
+		else iRemoved = 0
+		if (iRemoved == length sRemovedStyle) bInRemoved = true
+		
+		if (bInAdded && sClean[i] != '}') sAddedText = sAddedText sClean[i] ""  // collect added characters
+
+		if (sClean[i] == sAddedStyle[iAdded]) iAdded++   // find the start of added text
+		else iAdded = 0
+		if (iAdded == length sAddedStyle) bInAdded = true
+		
+		if (bInUnchanged) sUnchangedText = sUnchangedText sClean[i] ""	// collect unchanged characters
+
+		if (sClean[i] == '}')  // the end of a format - check if the marked up text has been untangled
+		{
+			int x = i + 1					// read spaces to see what's next
+			while (sClean[x] == ' ') x++
+
+			if(sClean[x] != '{')  // unchanged text is following - add collected text to the untangled text
+			{
+				if (sRemovedText != "") 
+				{
+					if (sRemovedText[0] == ' ')	sRemovedText = " {" sRemovedStyle sRemovedText[1:] "}"
+					else sRemovedText = "{" sRemovedStyle sRemovedText "}"
+				}
+				if (sRemovedText != "" && sAddedText != "") sSpacer = " " // add space between removed and added text
+				else sSpacer = ""
+				if (sAddedText != "") sAddedText = "{" sAddedStyle sAddedText "}" 
+				sUntangled = sUntangled sUnchangedText sRemovedText sSpacer sAddedText
+				sUnchangedText = sRemovedText = sAddedText = ""
+				bInUnchanged = true
+				bInRemoved = bInAdded = false
+			}
+		}
+	}
+	sUntangled = sUntangled sUnchangedText  // just in case if there is unchanged text at the end
+	return sUntangled
+}
+
+string getIdentifiersOutLinkedObjects(Object oThis)
+{
+	Link lOut = null
+	string sOutModuleName = ""
+	Module mOut = null
+	ModuleVersion mvOut = null
+	Object oOut = null
+	
+	string sIdentifiers = ""
+	
+	if (null oThis) return ""
+	if (isDeleted oThis) return ""
+	
+	for lOut in all(oThis->"*") do {
+		mvOut = targetVersion lOut
+		if (null module mvOut) continue
+		if (isDeleted module mvOut) continue
+		oOut = target lOut
+		if (null oOut) {
+			sOutModuleName = fullName mvOut
+			mOut = read (sOutModuleName, false)
+			if (isBaseline mvOut) load (mOut, baseline mvOut, false)
+		}
+		oOut = target lOut
+		if (null oOut) continue
+		if (isDeleted oOut) continue
+		sIdentifiers = sIdentifiers identifier oOut "\n"
+	}
+	return sIdentifiers
+}
+
+string getObjectHierarchy(Object oThis)
+{
+	if (null oThis) return ""
+	Buffer sAnchestors = create
+	Object oParent = parent oThis
+	while ( !null oParent ) {
+		sAnchestors += "> " oParent."Absolute Number" " "  
+		oParent = parent oParent
+	}
+	return stringOf sAnchestors
+}
+
+Regexp hasLine = regexp ".+$"
+Skip skpOlder
+Skip skpNewer
+string compareLines(Buffer buffOlder, Buffer buffNewer)
+{
+	string sOutLink = ""
+	string sResult = ""
+	skpOlder = createString 
+	skpNewer = createString
+	
+	while (hasLine buffOlder) {  // populate the older skip list
+		put (skpOlder, buffOlder[match 0] "", buffOlder[match 0] "")
+		buffOlder = buffOlder[(end 0) + 1 :]
+	}
+	while (hasLine buffNewer) {  // populate the newer skip list
+		put (skpNewer, buffNewer[match 0] "", buffNewer[match 0] "")
+		buffNewer = buffNewer[(end 0) + 1 :]
+	}
+	for sOutLink in skpNewer do {  // show same and added out links
+		if (delete (skpOlder, sOutLink) ) sResult = sResult "\\par " sOutLink
+		else sResult = sResult "\\par {" sAddedStyle sOutLink "}"
+	}
+	for sOutLink in skpOlder do sResult = sResult "\\par {" sRemovedStyle sOutLink "}" // show deleted out links 
+
+	delete skpOlder
+	delete skpNewer
+	if (length sResult > length "\\par ") sResult = sResult[length "\\par ": ] 
+	return "{" sResult "}" 
+}
+
+
+Regexp hasCurly = regexp "\\\\[{}]"
+AttrDef adAttrDef = null
+AttrType atAttrType = null
+Buffer buffNewerAttr = null
+Buffer buffOlderAttr = null
+Buffer buffAttrDifference = null
+// Compare an attribute of two objects with same absolute number or agaist a null object.
+bool compareObjects (Object oNewer, Object oOlder, string sAttrName)
+{
+	string sObjectId = ""
+	string sObjectNumber = ""
+	string sNewerAttr = ""
+	string sOlderAttr = ""
+	bool bAttrChanged = false
+	bool bShowMainColumn = false
+	bool bDifferentBorder = false
+	string sRTFragment = ""
+	string sChangeIndicator = "   "
+
+	bool bIsEnumeration = false
+
+	// find out if it is a bloody Enumeration
+	adAttrDef = find ( mNewerVersion, sAttrName )
+	if (!null adAttrDef) atAttrType = find ( mNewerVersion, adAttrDef.typeName )
+	if (!null atAttrType) {
+		if (stringOf(atAttrType.type) == stringOf(attrEnumeration) ) bIsEnumeration = true
+	}
+
+	if (sAttrName == "Out Links")
+	{
+		sNewerAttr = getIdentifiersOutLinkedObjects(oNewer)	// get newer attribute out links
+		sOlderAttr = getIdentifiersOutLinkedObjects(oOlder)	// get older attribute out links
+	}
+	else if (sAttrName == "Object Hierarchy")
+	{
+		if(!null oOlder && !null oNewer && !isDeleted oOlder && !isDeleted oNewer) 
+		{
+			sNewerAttr = getObjectHierarchy(oNewer)	// get newer attribute object hierarchy
+			sOlderAttr = getObjectHierarchy(oOlder)	// get older attribute object hierarchy
+		}
+	}
+	else 
+	{
+		sNewerAttr = probeAttribute_(oNewer, sAttrName, false)	// get newer attribute if it exists
+		sOlderAttr = probeAttribute_(oOlder, sAttrName, false)	// get older attribute if it exists
+	}
+	if (!null sNewerAttr) 
+	{
+		buffNewerAttr = sNewerAttr
+		bShowMainColumn = (bShowAllMainAttributes && (sAttrName == "Object Text" || sAttrName == "Object Heading") && length sNewerAttr > 0)
+	}
+	else buffNewerAttr = ""
+	if (!null sOlderAttr) buffOlderAttr = sOlderAttr
+	else buffOlderAttr = ""
+	
+	if (!bJustExport && buffNewerAttr != buffOlderAttr) 
+	{
+		bAttrChanged = true	// attribute changed
+		if (null sNewerAttr) sChangeIndicator = sRemovedBack "rm" sWhiteBack
+		else if (null sOlderAttr) sChangeIndicator = sAddedBack "ad" sWhiteBack
+		else sChangeIndicator = sRemovedBack "c" sAddedBack "h" sWhiteBack
+	}
+	
+	if (bAttrChanged || (bShowUnchangedAttributes && length buffNewerAttr > 0) || bShowMainColumn)
+	{
+		Object oConcerned = oNewer
+		if (null oNewer) oConcerned = oOlder 
+		sObjectId = identifier oConcerned		// get the identifer
+		if (sAttrName == "Object Heading") sObjectNumber = sGreen number oConcerned sBlack " "
+		string sTablePerfix = ""
+		if (cell oConcerned) sTablePerfix = "Cell " 
+		if (sObjectId == sPreviousObjectId) 
+		{
+			sObjectId = ""
+			sIdentifierBorder = sLeftBorder
+		}
+		else 
+		{
+			progressMessage "Outputting object " sObjectId 
+			sPreviousObjectId = sObjectId
+			sIdentifierBorder = sTopBorder sLeftBorder
+		}
+		
+		bDifferentBorder = (sOldIdentifierBorder != sIdentifierBorder) || sOldIdentifierBorder == ""
+		if (bDifferentBorder) strmOutput << "\\trowd \\trgaph108\\trleft-108\\trkeep"
+
+		if (bIsEnumeration || sAttrName == "Out Links")
+		{
+			sRTFragment = compareLines ( buffOlderAttr, buffNewerAttr )
+		}
+		else
+		{
+			sRTFragment = ""
+			if(length buffNewerAttr < iBloodyBig && length buffOlderAttr < iBloodyBig)
+			{
+				if (bAttrChanged) 
+				{
+					if (hasWhiteSpace buffOlderAttr && hasWhiteSpace buffNewerAttr)
+					{
+						diff (buffAttrDifference, buffOlderAttr, buffNewerAttr, sRemovedStyle, sAddedStyle)
+						findColorTable buffAttrDifference	// find the color table with a regex 
+						sRTFragment = buffAttrDifference[end 0 + 1:(length buffAttrDifference) - 3]
+						if (!hasCurly sRTFragment)  {
+							sRTFragment = fixRTFragment ( sRTFragment )
+						}
+					}
+					else 
+					{
+						if (length buffOlderAttr > 0) sRTFragment = "{" sRemovedStyle exportRTFString buffOlderAttr "} " 
+						if (length buffNewerAttr > 0) sRTFragment = sRTFragment "{" sAddedStyle exportRTFString buffNewerAttr "}"
+					}
+				}
+				else
+				{
+					if(bJustExport) 
+					{
+						sRTFragment = exportRTFString richTextFragment probeRichAttr_(oNewer, sAttrName, false)
+						bAttrChanged = true // count also exported attributes
+					}
+					else sRTFragment = exportRTFString sNewerAttr
+				} 
+			}
+			else sRTFragment = sCyan "This attribute is too long. Figure out the difference yourself..."
+		}
+
+		if(bDifferentBorder) strmOutput << sIdentifierBorder "\\cellx1426 " sTopBorder "\\cellx3127 " sTopBorder "\\cellx3527 " sTextBorder "\\cellx10031\n"
+		if (sAttrName == "Object Heading") strmOutput << "\\intbl \\b " sGreen sObjectId "\\cell " sTablePerfix sAttrName "\\cell "sChangeIndicator "\\cell " sObjectNumber sRTFragment "\\b0\\cell\\row\n"
+		else strmOutput << "\\intbl "  sGreen sObjectId "\\cell " sTablePerfix sAttrName "\\cell "sChangeIndicator sBlack "\\cell " sRTFragment "\\cell\\row\n"
+
+		sOldIdentifierBorder = sIdentifierBorder
+	}
+	return bAttrChanged
+}
+
+// Compare the two versions
+void doCompareVersions (DBE dbe)
+{
+	string sNewerVersionName = get lstNewer            // version name
+	string sOlderVersionName = get lstOlder
+	string sOutputFileName = get fnOutputFileBrowse
+	string sTemp = ""
+
+	buffNewerAttr = create iBloodyBig
+	buffOlderAttr = create iBloodyBig
+	buffAttrDifference = create iBloodyBig
+
+	bShowUnchangedAttributes = get cbShowUnchangedAttributes
+	if (bShowUnchangedAttributes) sTemp = "true"
+	else sTemp = "false" 
+	setRegistry (sRegistryPath, "Show Unchanged Attributes", sTemp)
+	
+	bShowAllMainAttributes = get cbShowAllMainAttributes
+	if (bShowAllMainAttributes) 
+	{
+		sTemp = "true"
+		set (mlstAttrNames, 0, true)	// select Object Heading and Text attributes
+		set (mlstAttrNames, 2, true)
+	}
+	else sTemp = "false" 
+	setRegistry (sRegistryPath, "Show All Main Attributes", sTemp)
+
+	setRegistry (sRegistryPath, "Newer Color", get chcNewerColor)
+	sAddedBack = saColorBacks[get chcNewerColor]
+	if (get cbUnderlined) {
+		sTemp = "true"
+		sAddedStyle = "\\ul" saColorFonts[get chcNewerColor]
+	}
+	else {
+		sTemp = "false"
+		sAddedStyle = saColorFonts[get chcNewerColor]
+	} 
+	setRegistry (sRegistryPath, "Underlined", sTemp)
+	
+	setRegistry (sRegistryPath, "Older Color", get chcOlderColor)
+	sRemovedBack =  saColorBacks[get chcOlderColor]
+	if (get cbStrikeThrough) {
+		sTemp = "true"
+		sRemovedStyle = "\\strike" saColorFonts[get chcOlderColor]
+	}
+	else {
+		sTemp = "false"
+		sRemovedStyle =  saColorFonts[get chcOlderColor]
+	} 
+	setRegistry (sRegistryPath, "Strike Through", sTemp)
+	
+	
+	bJustExport = fullName mNewerModule == fullName mOlderModule && sNewerVersionName == sOlderVersionName
+	if(bJustExport)
+	{	// allways use these settings for the export
+		bShowUnchangedAttributes = true
+	}
+	
+	string sEndMessage = "The End"
+	sOldIdentifierBorder = ""
+
+	int iCount = 0
+	string sOutputFilePath = ""
+	for (iCount = 0; iCount < length sOutputFileName; iCount++)
+	{
+		if (sOutputFileName[iCount] == '\\') sOutputFilePath = sOutputFileName[0:iCount]
+	} 
+	setRegistry (sRegistryPath, "Output File Path", sOutputFilePath)
+
+	noError
+	strmOutput = write sOutputFileName
+	string sOpenStatus = lastError
+	if (!null sOpenStatus)
+	{
+		matches(".> ", sOpenStatus)
+		ack sOpenStatus[(end 0)+1:] "\nMake sure that the path exists and that no other pogram is blocking the output file."
+		return
+	}
+	
+	// file header
+	strmOutput << "{\\rtf1\\ansi\\ansicpg1252\\deff0\\deflang1033{\\fonttbl{\\f0\\fswiss\\fcharset0 Times New Roman;}}" sColorTable "\n"
+	strmOutput << "\\paperw11906\\paperh16838\\margl1134\\margr567\\margt1134\\margb851\\headery567\\footery567\n"
+	strmOutput << "\\b \\ul \\fs24 Para Compare Versions\\ul0 \\b0 \\par\\par\n"
+
+	doLoadVersions btnLoadVersions
+	showModuleInformation (mNewerVersion, mOlderVersion)
+
+	const int iStatMaxAttr = 400   // 400 Attributes for statistics should be big enough! 
+	int iStatAttr[iStatMaxAttr]
+	int iModifiedObjects = 0
+	int iStatAttrMarker = 0
+	for (iStatAttrMarker = 0; iStatAttrMarker < iStatMaxAttr; iStatAttrMarker++) {iStatAttr[iStatAttrMarker] = 0}
+
+	int iObjectCount = 0
+	int iOlderObjects = 0
+	int iNewerObjects = 0
+	int iRemovedObjects = 0
+	int iAddedObjects = 0
+	int iRelatedObjects = 0
+	int iChangedObjects = 0
+	int iChangedNewerObjects = 0
+	int iDifferences = 0
+	int iComparedAttr = 0
+	
+	if (bJustExport)
+	{
+		strmOutput << "\\pard\\par\\fs24\\ul\\cf0 Exported Objects\\ul0\\par\\par\n"//-
+		              "\\fs16 The attributes are exported in rich text format.\\par\\par\n"
+	}
+	else 
+	{
+		strmOutput << "\\pard\\par\\fs24\\ul\\cf0 Compared Objects\\ul0\\par\\par\n"//-
+		              "\\fs16 Information added by Para Compare Versions is shown " sGreen "green" sBlack ".\\par\n"
+	    strmOutput << "Information only in " sOlderModuleName " " sOlderVersionName " is shown " sRemovedStyle "like this" sBlack "\\strike0\\ul0.\\par "//-
+                      "Information only in " sNewerModuleName " " sNewerVersionName " is shown " sAddedStyle "like this" sBlack "\\strike0\\ul0.\\par "//-
+					  "Information in both modules is shown black.\\par\\par\n"
+		strmOutput << "The Change Indicator (CI) column shows the change of an attribute. (Open in MS Word for correct display)\\par "//-
+		              "   Removed attributes are shown like this " sRemovedBack "rm" sWhiteBack ".\\par "//-
+		              "   Added attributes are shown like this " sAddedBack "ad" sWhiteBack ".\\par "//-
+		              "   Changed attributes are shown like this " sRemovedBack "c" sAddedBack "h" sWhiteBack ".\\par "//-
+		              "   If nothing changed the CI column is empty.\\par\\par\n"
+	} 
+	strmOutput << "\\trowd \\trgaph108\\trleft-108\\trhdr"
+	strmOutput << sAllBorders "\\cellx1426 " sAllBorders "\\cellx3127 " sAllBorders "\\cellx3527 " sAllBorders "\\cellx10031\n"
+	strmOutput << "\\intbl \\b " sGreen "Identifier\\cell Attribute Name\\cell CI\\cell Attribute Text\\b0 \\cell\\row\n"
+	
+	Object oNewer = null
+	Object oOlder = null
+	string sAttrName = ""
+	
+	for oNewer in entire mNewerVersion do
+	{
+		if (isDeleted oNewer || table oNewer || row oNewer) continue
+		iNewerObjects++
+	}
+	for oOlder in entire mOlderVersion do	// list older objects not in newer module with the according predecessor
+	{
+		if (isDeleted oOlder || table oOlder || row oOlder) continue
+		iOlderObjects++
+		
+		int iOlderAbsoluteNumber = oOlder."Absolute Number"
+		oNewer = object (iOlderAbsoluteNumber, mNewerVersion)
+		if (null oNewer || isDeleted oNewer) iRemovedObjects++
+	}
+
+	Skip skRemoved = create
+	int iLastAbsoluteNumber = -1	
+
+	progressStart (dbCompareVersions, " Para Compare Versions", "", iNewerObjects + iRemovedObjects)
+	int iStartTime = intOf today
+	for oOlder in entire mOlderVersion do	// list older objects not in newer module with the according predecessor
+	{
+		if (isDeleted oOlder || table oOlder || row oOlder) continue
+
+		int iOlderAbsoluteNumber = oOlder."Absolute Number"
+		oNewer = object (iOlderAbsoluteNumber, mNewerVersion)
+		if (null oNewer || isDeleted oNewer)
+		{
+			if (iLastAbsoluteNumber == -1) // output first deleted objects
+			{
+				progressStep iObjectCount++
+				iStatHasObjHasChanged = false
+				for sAttrName in mlstAttrNames do
+				{
+					if (compareObjects (oNewer, oOlder, sAttrName)) {
+						iDifferences++
+						iStatHasObjHasChanged = true
+					}
+					iComparedAttr++
+				}
+				if (iStatHasObjHasChanged) iChangedObjects++
+			}
+			else put (skRemoved, iOlderAbsoluteNumber, iLastAbsoluteNumber)
+		}
+		else iLastAbsoluteNumber = iOlderAbsoluteNumber
+	}
+	
+	for oNewer in entire mNewerVersion do	// sorted according to the order in the newer version
+	{
+		if (isDeleted oNewer || table oNewer || row oNewer) continue
+		
+		progressStep iObjectCount++
+		int iNewerAbsoluteNumber = oNewer."Absolute Number"
+		oOlder = object (iNewerAbsoluteNumber, mOlderVersion)
+	
+		iStatAttrMarker = 0
+		iStatHasObjHasChanged = false
+		for sAttrName in mlstAttrNames do	// compare the newer object against an older one
+		{
+			if (compareObjects (oNewer, oOlder, sAttrName)) {
+				iDifferences++
+				iStatAttr[iStatAttrMarker]++
+				iStatHasObjHasChanged = true
+			}
+			iStatAttrMarker++
+			iComparedAttr++
+		}
+		if (null oOlder || isDeleted oOlder || table oOlder || row oOlder) iAddedObjects++
+		else {
+			iRelatedObjects++
+			if (iStatHasObjHasChanged) iModifiedObjects++
+		}
+		if (iStatHasObjHasChanged) {
+			iChangedNewerObjects++
+			iChangedObjects++
+		}
+
+		int iAbsoluteNumber		// insert deleted older objects after the previous newer one
+		for iAbsoluteNumber in skRemoved do
+		{
+			if (iAbsoluteNumber == iNewerAbsoluteNumber)
+			{
+				progressStep iObjectCount++
+				int iOlderAbsoluteNumber = key skRemoved
+				oOlder = object (iOlderAbsoluteNumber, mOlderVersion)
+				oNewer = null
+				iStatHasObjHasChanged = false
+				for sAttrName in mlstAttrNames do
+				{
+					if (compareObjects (oNewer, oOlder, sAttrName)) {
+						iDifferences++
+						iStatHasObjHasChanged = true
+					}
+					iComparedAttr++
+				}
+				if (iStatHasObjHasChanged) iChangedObjects++
+			}
+		}
+		
+		if (progressCancelled) {
+			sEndMessage = "Canceled"
+			break
+		}
+	}
+	strmOutput << "\\trowd \\trgaph108\\trleft-108\\trkeep"
+	strmOutput << sAllBorders "\\cellx1426 " sAllBorders "\\cellx3127 " sAllBorders "\\cellx3527 " sAllBorders "\\cellx10031\n"
+	strmOutput << "\\intbl \\b " sGreen sEndMessage "\\cell " sEndMessage "\\cell\\cell " sEndMessage sBlack "\\b0\\cell\\row\n"
+	progressStop
+
+	if (bJustExport) {
+		strmOutput << "\\pard \\fs24 \\par Checked " iComparedAttr " attributes and exported " iDifferences ".\\par \n"
+	}
+	else { 
+		// Statistics Output	
+		strmOutput << sBlack "\\pard\\par \\fs24 \\ul Comparison Statistics\\ul0 \\par \n"
+		strmOutput << "\\pard \\fs24 \\par Some things to consider if the numbers don't add up....\\par \n"
+		strmOutput << "* Total objects are all unique objects in both versions.\\par \n"
+		strmOutput << "* Deleted objects are treated as non-existing objects.\\par \n"
+		strmOutput << "* Attributes of non-existing objects are treated as empty attributes.\\par \n"
+		strmOutput << "* Removed objects exist only in the older version.\\par \n"
+		strmOutput << "* Added objects exist only in the newer version.\\par \n"
+		strmOutput << "* Related objects exist in both versions.\\par \n"
+		strmOutput << "* Changed objects are objects where a compared attribute is different.\\par \n"
+		strmOutput << "* Modified objects are changed related objects.\\par\\par \n"
+		strmOutput << "That means for example...\\par \n"
+		strmOutput << "* Removed empty objects are not counted as changed.\\par \n"
+		strmOutput << "* Added empty objects are not counted as changed.\\par \n"
+		strmOutput << "* Modified objects have changed compared attributes and exist in both versions.\\par \n"
+		strmOutput << "* Removed objects are not counted as modified.\\par \n"
+		strmOutput << "* Added objects are not counted as modified.\\par \n"
+
+		strmOutput << "\\pard \\fs24 \\par " iObjectCount " objects with " iComparedAttr " attributes have been compared.\\par \n"
+		strmOutput << iOlderObjects " objects exist in the older version.\\par \n"
+		strmOutput << "  " iRemovedObjects " objects have been removed.\\par \n"
+		strmOutput << iNewerObjects " objects exist in the newer version.\\par \n"
+		strmOutput << "  " iRelatedObjects " objects are related.\\par \n"
+		strmOutput << "  " iAddedObjects " objects have been added.\\par\\par \n"
+		strmOutput << iChangedObjects " objects have been changed.\\par \n"
+		strmOutput << iDifferences " attributes are different.\\par \n"
+		strmOutput << iChangedNewerObjects " newer objects have been changed.\\par \n"
+		strmOutput << iModifiedObjects " newer objects have been modified.\\par\\par \n"
+		
+		strmOutput << "\\pard \n" 
+		strmOutput << "\\trowd \\trgaph108\\trleft-108\\trhdr"
+		strmOutput << sAllBorders "\\cellx5000 " sAllBorders "\\cellx10000 \n"
+		strmOutput << "\\intbl \\fs16\\b Attribute \\cell Changed in # of Newer Objects\\b0\\cell\\row \n"
+		iStatAttrMarker = 0
+		for sAttrName in mlstAttrNames do {
+			strmOutput << "\\intbl " sAttrName "\\cell " iStatAttr[iStatAttrMarker] "\\cell\\row \n"
+			iStatAttrMarker++
+		}
+	}
+
+	strmOutput << "\\pard }\n"  // Last line of entire export, closes the RichText
+	close strmOutput
+	delete buffNewerAttr
+	delete buffOlderAttr
+	delete buffAttrDifference
+	delete skRemoved
+	current = mNewerModule	// return to current version
+
+	int iEndTime = intOf today
+	int iSeconds = iEndTime - iStartTime
+	if (iSeconds == 0) iSeconds = 1
+	int iAttrPerSecond = iComparedAttr/iSeconds
+	if (bJustExport) infoBox "Checked " iComparedAttr " attributes and exported " iDifferences " in " iSeconds " seconds.\n" iAttrPerSecond " attributes per second."
+	else infoBox "Found " iDifferences " differences in " iChangedObjects " changed objects.\nCompared " iComparedAttr " attributes in " iSeconds " seconds.\n" iAttrPerSecond " comparisions per second."
+}
+
+// *************************************************************************************************************************
+// Main program
+bool bTemp = false
+string sTemp = ""
+int iTemp = 0
+
+Module mCurrent = current
+if (null mCurrent)
+{
+	ack "Start Para Compare Versions from a module..."
+	halt
+}
+
+mNewerModule = mOlderModule = mCurrent
+sNewerModuleName = fullName mNewerModule
+sOlderModuleName = fullName mOlderModule
+
+// Dialog for selecting two baselines for comparison
+int iHalfWidth = 275
+string strEmptyArr[] = {}
+
+dbCompareVersions = create ("Para Compare Versions", styleCentered|styleFixed)
+
+lstNewer = list (dbCompareVersions, "Newer Version", iHalfWidth, 9, strEmptyArr)
+lstNewer->"left"->"form"
+lstNewer->"right"->"unattached"
+fldNewerVersion = field (dbCompareVersions, "", "Not loaded yet...", 42, true)
+fldNewerVersion->"left"->"form"
+
+lstOlder = list(dbCompareVersions, "Older Version", iHalfWidth, 9, strEmptyArr)
+lstOlder->"left"->"form"
+lstOlder->"right"->"unattached"
+fldOlderVersion = field (dbCompareVersions, "", "Not loaded yet...", 42, true)
+fldOlderVersion->"left"->"form"
+
+mlstAttrNames = multiList (dbCompareVersions, "Attributes to Compare", iHalfWidth, 24, strEmptyArr)
+mlstAttrNames->"top"->"form"
+mlstAttrNames->"left"->"flush"->lstNewer
+mlstAttrNames->"right"->"unattached"
+
+btnLoadVersions = button (dbCompareVersions, "Load Versions", doLoadVersions)
+btnLoadVersions->"top"->"spaced"->fldOlderVersion
+beside dbCompareVersions
+btnCompare = button (dbCompareVersions, "Compare", doCompareVersions)
+btnBrowseOlder = button(dbCompareVersions, " Browse Older ", doBrowseOlder, false)
+
+btnSelectAllAttr = button (dbCompareVersions, "Select All", doSelectAllAttr)
+btnSelectAllAttr->"left"->"flush"->lstNewer
+btnDeselectAllAttr = button (dbCompareVersions, "Deselect All", doDeselectAllAttr)
+btnSelectAsView = button (dbCompareVersions, "As View", doSelectAsView)
+fldSelectedAttrCount = field (dbCompareVersions, "", "", 4, true)
+fldSelectedAttrCount->"right"->"form"
+
+left dbCompareVersions
+bTemp = getRegistry (sRegistryPath, "Show Unchanged Attributes") == "true"
+cbShowUnchangedAttributes = toggle (dbCompareVersions,"Show unchanged attributes", bTemp)
+cbShowUnchangedAttributes->"top"->"spaced"->btnLoadVersions
+beside dbCompareVersions
+bTemp = getRegistry (sRegistryPath, "Show All Main Attributes") == "true"
+cbShowAllMainAttributes = toggle (dbCompareVersions,"Show all main attributes", bTemp)
+
+left dbCompareVersions
+sTemp = getRegistry (sRegistryPath, "Newer Color")
+if (!null sTemp) iTemp = intOf sTemp
+else iTemp = 3
+chcNewerColor = choice (dbCompareVersions, "Text only in newer version", saColors, iTemp, 5, false)
+beside dbCompareVersions
+bTemp = getRegistry (sRegistryPath, "Underlined") == "true"
+cbUnderlined = toggle (dbCompareVersions,"Underlined", bTemp)
+
+sTemp = getRegistry (sRegistryPath, "Older Color")
+if (!null sTemp) iTemp = intOf sTemp
+else iTemp = 2
+chcOlderColor = choice (dbCompareVersions, "Text only in older version", saColors, iTemp, 5, false)
+chcOlderColor->"left"->"flush"->lstNewer
+beside dbCompareVersions
+bTemp = getRegistry (sRegistryPath, "Strike Through") == "true"
+cbStrikeThrough = toggle (dbCompareVersions,"Strike through", bTemp)
+
+left dbCompareVersions
+btnSelectMatchingAttr1 = button (dbCompareVersions, "Select", doSelectMatchingAttr)
+beside dbCompareVersions
+btnSetMatchingAttr1 = button(dbCompareVersions, "Set", doSetMatchingAttr)
+sTemp = getRegistry (sRegistryPath, "Regex Pattern 1")
+if (null sTemp) sTemp = "(^Object Heading$)|(^Object Text$)"
+fldRegexPatternAttr1 = field (dbCompareVersions, "", sTemp, 1)
+fldRegexPatternAttr1->"right"->"form"
+
+left dbCompareVersions
+btnSelectMatchingAttr2 = button (dbCompareVersions, "Select", doSelectMatchingAttr)
+beside dbCompareVersions
+btnSetMatchingAttr2 = button (dbCompareVersions, "Set", doSetMatchingAttr)
+sTemp = getRegistry (sRegistryPath, "Regex Pattern 2")
+if (null sTemp) sTemp = "Enter a regular expression to match attributes here, see example above."
+fldRegexPatternAttr2 = field (dbCompareVersions, "", sTemp, 1)
+fldRegexPatternAttr2->"right"->"form"
+
+left dbCompareVersions
+btnSelectMatchingAttr3 = button (dbCompareVersions, "Select", doSelectMatchingAttr)
+beside dbCompareVersions
+btnSetMatchingAttr3 = button (dbCompareVersions, "Set", doSetMatchingAttr)
+sTemp = getRegistry (sRegistryPath, "Regex Pattern 3")
+if (null sTemp) sTemp = "Select matches the attributes; Set gets the expression from the attributes to compare."
+fldRegexPatternAttr3 = field (dbCompareVersions, "", sTemp, 1)
+fldRegexPatternAttr3->"right"->"form"
+
+left dbCompareVersions
+string sOutputFilePath = getRegistry (sRegistryPath, "Output File Path")
+string sOutputFileName = sOutputFilePath "Para Compare Versions " mNewerModule."Name" ".rtf"
+fnOutputFileBrowse = fileName (dbCompareVersions, "Output File ", sOutputFileName, "*.rtf", "Rich Text Files", false)
+fnOutputFileBrowse->"left"->"form"
+
+// dummy to get the copy right in the right place
+left dbCompareVersions
+DBE lblDummy = label (dbCompareVersions, "")
+lblDummy->"top"->"spaced"->fnOutputFileBrowse
+DBE lblCopyRight = label (dbCompareVersions, "Copyright (C) Reinhold Lauer 2013")
+lblCopyRight->"bottom"->"spaced"->lblDummy
+inactive (lblCopyRight)
+
+apply (dbCompareVersions, "Help", applyShowHelp)
+realize (dbCompareVersions, 0, 0)                     // realize so that the lists can be populated
+
+fillVersionList (lstNewer, mNewerModule)
+set (lstNewer, checkVersionSelection, checkVersionSelection)
+set (fldNewerVersion, sNewerModuleName)
+
+fillVersionList (lstOlder, mOlderModule)
+set (lstOlder, checkVersionSelection, checkVersionSelection)
+set (fldOlderVersion, sOlderModuleName)
+
+// add the attributes to the list
+insert (mlstAttrNames, 0, "Object Heading")
+set (mlstAttrNames, 0, true)
+insert (mlstAttrNames, 1, "Object Short Text")
+set (mlstAttrNames, 1, true)
+insert (mlstAttrNames, 2, "Object Text")
+set (mlstAttrNames, 2, true)
+insert (mlstAttrNames, 3, "Out Links")
+set (mlstAttrNames, 3, true)
+insert (mlstAttrNames, 4, "Object Hierarchy")
+set (mlstAttrNames, 4, true)
+addVersionAttibutesToList (mNewerModule)
+doUpdateSelectedCount (mlstAttrNames)
+set (mlstAttrNames, doUpdateSelectedCount, doUpdateSelectedCount)
+
+show dbCompareVersions
